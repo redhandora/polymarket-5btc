@@ -79,3 +79,36 @@ export function evaluateEntry(
 
   return { enter: true, side, price: pMarket, edge, pModel, pMarket, reason: null };
 }
+
+/** Momentum-based entry: enter when token deviates from 0.50 by at least minTokenDeviation. */
+export function evaluateMomentumEntry(
+  tokenPrice: number,
+  book: OrderBookSnapshot,
+  config: TradingConfig,
+): EntryDecision {
+  const deviation = tokenPrice - 0.50;
+  const absDeviation = Math.abs(deviation);
+
+  if (absDeviation < config.minTokenDeviation) {
+    return {
+      enter: false,
+      side: null,
+      price: null,
+      edge: 0,
+      pModel: tokenPrice,
+      pMarket: book.bestAsk,
+      reason: `deviation ${absDeviation.toFixed(4)} < min ${config.minTokenDeviation}`,
+    };
+  }
+
+  const side: Side = deviation > 0 ? 'up' : 'down';
+  const pMarket = book.bestAsk;
+
+  // Price band check
+  const bandCheck = priceBandFilter(pMarket, config);
+  if (!bandCheck.pass) {
+    return { enter: false, side, price: pMarket, edge: 0, pModel: tokenPrice, pMarket, reason: bandCheck.reason };
+  }
+
+  return { enter: true, side, price: pMarket, edge: 0, pModel: tokenPrice, pMarket, reason: null };
+}

@@ -8,7 +8,8 @@
 
 import { loadConfig } from '../config.js';
 import { createBtcPriceFeed } from '../market-data/btc-price.js';
-import { createPlaceholderEstimator } from '../signal/placeholder.js';
+import { createMarketPriceEstimator } from '../signal/market-price-estimator.js';
+import type { MarketPriceEstimator } from '../signal/market-price-estimator.js';
 import { detectWindow, isInEntryWindow, isInStopWindow, msUntilEntryWindow } from '../strategy/window.js';
 import { runFilters } from '../strategy/filters.js';
 import { evaluateEntry } from '../strategy/entry.js';
@@ -24,7 +25,7 @@ const PREFIX = '[PAPER]';
 export async function runPaperTrading(initialBankroll: number): Promise<void> {
   const config = loadConfig();
   const btcFeed = createBtcPriceFeed(config);
-  const estimator = createPlaceholderEstimator();
+  const estimator = createMarketPriceEstimator();
   const riskState = createRiskState(initialBankroll);
 
   let lastWindowId: string | null = null;
@@ -83,7 +84,7 @@ async function paperTick(
   btcFeed: ReturnType<typeof createBtcPriceFeed>,
   simClient: ReturnType<typeof createSimClient>,
   realPolyClient: { getWindowMarket: (t: number) => Promise<{ marketId: string } | null> } | null,
-  estimator: ReturnType<typeof createPlaceholderEstimator>,
+  estimator: MarketPriceEstimator,
   riskState: ReturnType<typeof createRiskState>,
   state: { lastWindowId: string | null; lastTradeDate: string | null },
   setLastWindowId: (id: string) => void,
@@ -103,22 +104,19 @@ async function paperTick(
 
   if (windowId === state.lastWindowId) return;
 
-  // Market lookup
+  // Market lookup — try real client first, fall back to synthetic ID
   let marketId: string;
+  let market: { marketId: string } | null = null;
   if (realPolyClient) {
-    let market: { marketId: string } | null = null;
     try {
       market = await realPolyClient.getWindowMarket(windowOpen);
     } catch {
-      // ignore
+      // real client not configured — fall through to synthetic
     }
-    if (!market) {
-      console.log(`${PREFIX} [${windowId}] No market found`);
-      return;
-    }
+  }
+  if (market) {
     marketId = market.marketId;
   } else {
-    // Synthetic market ID for dry-run paper trading
     marketId = `paper-${windowId}`;
   }
 
@@ -141,55 +139,65 @@ async function paperTick(
 
   if (!isInEntryWindow(now, window, config)) return;
 
-  console.log(`${PREFIX} [${windowId}] Entry phase — evaluating...`);
+  const tag = `${PREFIX} [${windowId}]`;
+  const elapsedSec = ((now - window.openTime) / 1000).toFixed(1);
+  console.log(`${tag} ── Entry phase ── market=${marketId} refBTC=${referencePrice.toFixed(2)} elapsed=${elapsedSec}s`);
 
   const orderSize = computePositionSize(riskState, config);
+  console.log(`${tag} Position size: $${orderSize.toFixed(2)} (bankroll=$${riskState.totalBankroll.toFixed(2)} × ${(config.perTradeRiskPct * 100).toFixed(2)}%)`);
 
   // Update sim price from BTC feed (use mid-price heuristic)
   const currentBtc = await btcFeed.getPrice();
   const deltaPct = (currentBtc - referencePrice) / referencePrice;
   const simPrice = 0.5 + Math.max(-0.15, Math.min(0.15, deltaPct * 10));
   setSimPrice(simPrice);
+  estimator.setTokenPrice(simPrice);
+  console.log(`${tag} BTC now=${currentBtc.toFixed(2)} delta=${(deltaPct * 100).toFixed(4)}% → tokenPrice=${simPrice.toFixed(4)}`);
 
   const book = await simClient.getOrderBook(marketId);
+  console.log(`${tag} Book: bestBid=${book.bestBid.toFixed(4)} bestAsk=${book.bestAsk.toFixed(4)} spread=${book.spread.toFixed(4)} bidDepth=${book.bidDepth.toFixed(2)} askDepth=${book.askDepth.toFixed(2)}`);
 
   const filterResult = runFilters(now, window, book, orderSize, config);
   if (!filterResult.pass) {
-    console.log(`${PREFIX} [${windowId}] Filtered: ${filterResult.reason}`);
+    console.log(`${tag} Filtered: ${filterResult.reason}`);
     return;
   }
+  console.log(`${tag} Filters: PASS`);
 
   const riskCheck = checkRisk(riskState, config);
   if (!riskCheck.allowed) {
-    console.log(`${PREFIX} [${windowId}] Risk blocked: ${riskCheck.reason}`);
+    console.log(`${tag} Risk blocked: ${riskCheck.reason}`);
     return;
   }
+  console.log(`${tag} Risk: PASS (dailyPnl=$${riskState.dailyPnl.toFixed(2)} consLoss=${riskState.consecutiveLosses} dailyTrades=${riskState.dailyTrades})`);
 
   const estimate = await estimator.estimate(window, currentBtc);
+  console.log(`${tag} Estimate: up=${estimate.up.toFixed(4)} down=${estimate.down.toFixed(4)}`);
+
   const decision = evaluateEntry(estimate, book, config);
+  console.log(`${tag} Entry decision: enter=${decision.enter} side=${decision.side} pModel=${decision.pModel.toFixed(4)} pMarket=${decision.pMarket.toFixed(4)} edge=${decision.edge.toFixed(4)} minEdge=${config.makerMinEdge}${decision.reason ? ` reason="${decision.reason}"` : ''}`);
 
   if (!decision.enter) {
-    console.log(`${PREFIX} [${windowId}] No entry: ${decision.reason}`);
     return;
   }
-
-  console.log(`${PREFIX} [${windowId}] Entering ${decision.side} @ ${decision.price} (edge: ${decision.edge.toFixed(4)})`);
 
   riskState.activePosition = true;
   const { result, attempts } = await attemptEntry(simClient, marketId, 'buy', decision.price!, orderSize, config);
 
   if (!result.filled) {
-    console.log(`${PREFIX} [${windowId}] Entry failed after ${attempts} attempts`);
+    console.log(`${tag} Entry FAILED after ${attempts} attempts`);
     riskState.activePosition = false;
     return;
   }
-
-  console.log(`${PREFIX} [${windowId}] Filled @ ${result.fillPrice} (attempt ${attempts})`);
+  console.log(`${tag} Entry FILLED @ ${result.fillPrice} (attempt ${attempts}/${config.maxEntryAttempts})`);
 
   // Hold & stop check
   let stopTriggered = false;
   let exitPrice: number | null = null;
   let exitTime: number | null = null;
+  let stopChecks = 0;
+
+  console.log(`${tag} ── Hold phase ── waiting for stop window (${config.stopWindowStartSec}s-${config.stopWindowEndSec}s) or settlement...`);
 
   while (Date.now() < window.closeTime) {
     const checkNow = Date.now();
@@ -198,26 +206,40 @@ async function paperTick(
       const deltaNow = (btcNow - referencePrice) / referencePrice;
       const priceNow = 0.5 + Math.max(-0.15, Math.min(0.15, deltaNow * 10));
       setSimPrice(priceNow);
+      estimator.setTokenPrice(priceNow);
 
+      const adverseMove = result.fillPrice! - priceNow;
       const currentEdge = decision.pModel - (priceNow + config.estimatedFee);
+      const edgeDelta = decision.edge - currentEdge;
+      stopChecks++;
+
       const stopResult = evaluateStop(
         checkNow, window, result.fillPrice!, priceNow,
         decision.edge, currentEdge, config,
       );
+
+      const stopElapsed = ((checkNow - window.openTime) / 1000).toFixed(1);
+      console.log(`${tag} Stop check #${stopChecks} @${stopElapsed}s: BTC=${btcNow.toFixed(2)} token=${priceNow.toFixed(4)} adverse=${adverseMove.toFixed(4)}(thr=${config.stopAdverseMove}) edgeDelta=${edgeDelta.toFixed(4)}(thr=${config.stopEdgeDelta}) → ${stopResult.shouldExit ? 'EXIT' : 'hold'}`);
+
       if (stopResult.shouldExit) {
-        console.log(`${PREFIX} [${windowId}] ${stopResult.reason}`);
         const exitResult = await placeExitOrder(simClient, marketId, 'sell', priceNow, orderSize, config);
         stopTriggered = true;
         exitPrice = exitResult.fillPrice;
         exitTime = exitResult.fillTime;
+        console.log(`${tag} Stop exit FILLED @ ${exitPrice}`);
         break;
       }
     }
     await sleep(config.pollIntervalMs);
   }
 
+  if (!stopTriggered) {
+    console.log(`${tag} Window closed — no stop triggered (${stopChecks} checks)`);
+  }
+
   const pnlGross = exitPrice != null ? exitPrice - result.fillPrice! : null;
-  const pnlNet = pnlGross != null ? pnlGross - config.estimatedFee * orderSize : null;
+  const fees = config.estimatedFee * orderSize;
+  const pnlNet = pnlGross != null ? pnlGross - fees : null;
 
   if (pnlNet != null) {
     recordTradeResult(riskState, pnlNet);
@@ -228,6 +250,7 @@ async function paperTick(
   setLastWindowId(windowId);
   setLastTradeDate(today);
 
-  const pnlStr = pnlNet != null ? (pnlNet >= 0 ? `+$${pnlNet.toFixed(2)}` : `-$${Math.abs(pnlNet).toFixed(2)}`) : 'pending';
-  console.log(`${PREFIX} [${windowId}] Trade done. PnL: ${pnlStr} | Bankroll: $${riskState.totalBankroll.toFixed(2)}`);
+  const pnlGrossStr = pnlGross != null ? `$${pnlGross.toFixed(4)}` : 'n/a';
+  const pnlNetStr = pnlNet != null ? (pnlNet >= 0 ? `+$${pnlNet.toFixed(2)}` : `-$${Math.abs(pnlNet).toFixed(2)}`) : 'pending';
+  console.log(`${tag} ── Result ── entry=${result.fillPrice!.toFixed(4)} exit=${exitPrice?.toFixed(4) ?? 'settlement'} stop=${stopTriggered} grossPnl=${pnlGrossStr} fees=$${fees.toFixed(4)} netPnl=${pnlNetStr} | bankroll=$${riskState.totalBankroll.toFixed(2)} dailyPnl=$${riskState.dailyPnl.toFixed(2)} consLoss=${riskState.consecutiveLosses}`);
 }

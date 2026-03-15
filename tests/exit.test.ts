@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateStop } from '../src/strategy/exit.js';
+import { evaluateStop, evaluateTokenStop } from '../src/strategy/exit.js';
 import { loadConfig } from '../src/config.js';
 import type { WindowInfo } from '../src/types.js';
 
@@ -65,5 +65,34 @@ describe('evaluateStop', () => {
       config,
     );
     expect(result.shouldExit).toBe(false);
+  });
+});
+
+describe('evaluateTokenStop', () => {
+  it('triggers stop for up side when token drops enough', () => {
+    const result = evaluateTokenStop('up', 0.55, 0.49, config);
+    expect(result.shouldExit).toBe(true);
+    expect(result.reason).toContain('token stop');
+  });
+
+  it('does not trigger for up side when drop is small', () => {
+    const result = evaluateTokenStop('up', 0.55, 0.52, config);
+    expect(result.shouldExit).toBe(false);
+  });
+
+  it('triggers stop for down side when token rises enough', () => {
+    const result = evaluateTokenStop('down', 0.45, 0.51, config);
+    expect(result.shouldExit).toBe(true);
+  });
+
+  it('does not trigger for down side when rise is small', () => {
+    const result = evaluateTokenStop('down', 0.45, 0.48, config);
+    expect(result.shouldExit).toBe(false);
+  });
+
+  it('triggers at exact threshold', () => {
+    // stopTokenRetracement = 0.05, entry = 0.55, current = 0.50 → retracement = 0.05
+    const result = evaluateTokenStop('up', 0.55, 0.50, config);
+    expect(result.shouldExit).toBe(true);
   });
 });

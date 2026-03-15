@@ -2,6 +2,24 @@
  * Backtest report: types and printer.
  */
 
+import { writeFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
+
+export interface WindowDecisionLog {
+  windowId: string;
+  outcome: 'no_market' | 'no_price_data' | 'fetch_error' | 'no_btc_klines'
+         | 'filter_rejected' | 'risk_blocked' | 'entry_rejected' | 'traded';
+  reason: string | null;
+  tokenPrice: number | null;
+  bestAsk: number | null;
+  pricePoints: number | null;
+  side: string | null;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  pnlNet: number | null;
+  stopTriggered: boolean | null;
+}
+
 export interface BacktestTrade {
   windowId: string;
   side: 'up' | 'down';
@@ -21,6 +39,7 @@ export interface BacktestResult {
   lossCount: number;
   skipCount: number;
   trades: BacktestTrade[];
+  decisions: WindowDecisionLog[];
 }
 
 export function printBacktestReport(result: BacktestResult): void {
@@ -53,4 +72,22 @@ export function printBacktestReport(result: BacktestResult): void {
       console.log(`  ${t.windowId}  ${t.side.padEnd(4)}  entry=${t.entryPrice.toFixed(4)}  exit=${t.exitPrice?.toFixed(4) ?? 'n/a'}  pnl=${pnlStr}${stop}`);
     }
   }
+}
+
+function csvEscape(val: unknown): string {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  return s.includes(',') || s.includes('"') || s.includes('\n')
+    ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export function writeDecisionLog(result: BacktestResult, filePath: string): void {
+  const header = 'windowId,outcome,reason,tokenPrice,bestAsk,pricePoints,side,entryPrice,exitPrice,pnlNet,stopTriggered';
+  const rows = result.decisions.map((d) =>
+    [d.windowId, d.outcome, d.reason, d.tokenPrice, d.bestAsk, d.pricePoints,
+     d.side, d.entryPrice, d.exitPrice, d.pnlNet, d.stopTriggered].map(csvEscape).join(','),
+  );
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, [header, ...rows].join('\n') + '\n', 'utf-8');
+  console.log(`\nDecision log written to ${filePath} (${result.decisions.length} rows)`);
 }

@@ -1,4 +1,5 @@
 import type { TradingConfig } from '../config.js';
+import { fetch } from '../utils/fetch.js';
 
 export interface BtcPriceFeed {
   getPrice(): Promise<number>;

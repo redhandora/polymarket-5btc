@@ -1,5 +1,5 @@
 import type { TradingConfig } from '../config.js';
-import type { WindowInfo } from '../types.js';
+import type { Side, WindowInfo } from '../types.js';
 
 export interface StopCheckResult {
   shouldExit: boolean;
@@ -39,6 +39,32 @@ export function evaluateStop(
     return {
       shouldExit: true,
       reason: `stop: adverse move ${adverseMove.toFixed(4)} >= ${config.stopAdverseMove}, edge degraded ${edgeDelta.toFixed(4)} >= ${config.stopEdgeDelta}`,
+    };
+  }
+
+  return { shouldExit: false, reason: null };
+}
+
+/**
+ * Token-price-based stop: exit when the token price retraces from entry by >= stopTokenRetracement.
+ *
+ * For 'up' side: retracement = entryTokenPrice - currentTokenPrice (price dropping is adverse)
+ * For 'down' side: retracement = currentTokenPrice - entryTokenPrice (price rising is adverse)
+ */
+export function evaluateTokenStop(
+  side: Side,
+  entryTokenPrice: number,
+  currentTokenPrice: number,
+  config: TradingConfig,
+): StopCheckResult {
+  const retracement = side === 'up'
+    ? entryTokenPrice - currentTokenPrice
+    : currentTokenPrice - entryTokenPrice;
+
+  if (retracement >= config.stopTokenRetracement) {
+    return {
+      shouldExit: true,
+      reason: `token stop: retracement ${retracement.toFixed(4)} >= ${config.stopTokenRetracement} (${side})`,
     };
   }
 

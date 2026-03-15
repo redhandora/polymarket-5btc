@@ -291,9 +291,10 @@ async function dispatch() {
       process.exit(1);
     }
     const { runHistoricalBacktest } = await import('./backtest/historical.js');
-    const { printBacktestReport } = await import('./backtest/report.js');
+    const { printBacktestReport, writeDecisionLog } = await import('./backtest/report.js');
     const result = await runHistoricalBacktest({ startDate, endDate, initialBankroll: bankroll });
     printBacktestReport(result);
+    writeDecisionLog(result, `data/backtest-log-${startDate}.csv`);
     return;
   }
 

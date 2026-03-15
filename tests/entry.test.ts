@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateEntry, priceBandFilter, computeEdge } from '../src/strategy/entry.js';
+import { evaluateEntry, evaluateMomentumEntry, priceBandFilter, computeEdge } from '../src/strategy/entry.js';
 import { loadConfig } from '../src/config.js';
 import type { OrderBookSnapshot, ProbabilityEstimate } from '../src/types.js';
 
@@ -66,5 +66,37 @@ describe('evaluateEntry', () => {
     const decision = evaluateEntry(estimate, book, config);
     expect(decision.enter).toBe(false);
     expect(decision.reason).toContain('outside band');
+  });
+});
+
+describe('evaluateMomentumEntry', () => {
+  it('rejects when deviation < minTokenDeviation', () => {
+    const decision = evaluateMomentumEntry(0.51, makeBook(0.55), config);
+    expect(decision.enter).toBe(false);
+    expect(decision.reason).toContain('deviation');
+  });
+
+  it('enters up when tokenPrice > 0.50 + threshold', () => {
+    const decision = evaluateMomentumEntry(0.55, makeBook(0.55), config);
+    expect(decision.enter).toBe(true);
+    expect(decision.side).toBe('up');
+    expect(decision.edge).toBe(0);
+  });
+
+  it('enters down when tokenPrice < 0.50 - threshold', () => {
+    const decision = evaluateMomentumEntry(0.45, makeBook(0.55), config);
+    expect(decision.enter).toBe(true);
+    expect(decision.side).toBe('down');
+  });
+
+  it('rejects when price outside band', () => {
+    const decision = evaluateMomentumEntry(0.55, makeBook(0.70), config);
+    expect(decision.enter).toBe(false);
+    expect(decision.reason).toContain('outside band');
+  });
+
+  it('rejects at exactly 0.50', () => {
+    const decision = evaluateMomentumEntry(0.50, makeBook(0.55), config);
+    expect(decision.enter).toBe(false);
   });
 });

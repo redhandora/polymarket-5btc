@@ -7,6 +7,7 @@ export interface RiskState {
   totalBankroll: number;
   initialBankroll: number;
   dailyTrades: number;
+  cooldownUntil: number;  // epoch ms — 0 means no cooldown active
 }
 
 export function createRiskState(totalBankroll: number): RiskState {
@@ -17,6 +18,7 @@ export function createRiskState(totalBankroll: number): RiskState {
     totalBankroll,
     initialBankroll: totalBankroll,
     dailyTrades: 0,
+    cooldownUntil: 0,
   };
 }
 
@@ -26,16 +28,26 @@ export interface RiskCheck {
 }
 
 /** Check if trading is allowed given current risk state. */
-export function checkRisk(state: RiskState, config: TradingConfig): RiskCheck {
+export function checkRisk(state: RiskState, config: TradingConfig, nowMs: number = Date.now()): RiskCheck {
   if (state.activePosition) {
     return { allowed: false, reason: 'position already active' };
   }
 
   if (state.consecutiveLosses >= config.maxConsecutiveLosses) {
-    return {
-      allowed: false,
-      reason: `consecutive losses ${state.consecutiveLosses} >= max ${config.maxConsecutiveLosses}`,
-    };
+    if (state.cooldownUntil === 0) {
+      // Start cooldown
+      state.cooldownUntil = nowMs + config.consecutiveLossCooldownMs;
+    }
+    if (nowMs < state.cooldownUntil) {
+      const remainSec = Math.ceil((state.cooldownUntil - nowMs) / 1000);
+      return {
+        allowed: false,
+        reason: `consecutive losses ${state.consecutiveLosses} >= max ${config.maxConsecutiveLosses}, cooldown ${remainSec}s remaining`,
+      };
+    }
+    // Cooldown expired — reset and allow trading
+    state.consecutiveLosses = 0;
+    state.cooldownUntil = 0;
   }
 
   const dailyLossPct = Math.abs(Math.min(0, state.dailyPnl)) / state.totalBankroll;
@@ -88,4 +100,5 @@ export function resetDaily(state: RiskState): void {
   state.dailyPnl = 0;
   state.consecutiveLosses = 0;
   state.dailyTrades = 0;
+  state.cooldownUntil = 0;
 }

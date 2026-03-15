@@ -6,14 +6,30 @@ const config = loadConfig();
 const BANKROLL = 10_000;
 
 describe('checkRisk', () => {
-  it('halts after 3 consecutive losses', () => {
+  it('enters cooldown after 3 consecutive losses', () => {
     const state = createRiskState(BANKROLL);
+    const now = Date.now();
     recordTradeResult(state, -10);
     recordTradeResult(state, -10);
     recordTradeResult(state, -10);
-    const check = checkRisk(state, config);
+    const check = checkRisk(state, config, now);
     expect(check.allowed).toBe(false);
     expect(check.reason).toContain('consecutive losses');
+    expect(check.reason).toContain('cooldown');
+  });
+
+  it('allows trading after cooldown expires', () => {
+    const state = createRiskState(BANKROLL);
+    const now = Date.now();
+    recordTradeResult(state, -10);
+    recordTradeResult(state, -10);
+    recordTradeResult(state, -10);
+    // Trigger cooldown
+    checkRisk(state, config, now);
+    // After 30 min
+    const check = checkRisk(state, config, now + config.consecutiveLossCooldownMs);
+    expect(check.allowed).toBe(true);
+    expect(state.consecutiveLosses).toBe(0);
   });
 
   it('resets consecutive losses on a win', () => {

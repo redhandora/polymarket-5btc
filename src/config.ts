@@ -35,6 +35,10 @@ export interface TradingConfig {
   minDepthMultiplier: number;
   minTimeToSettlementSec: number;
 
+  // Momentum entry
+  minTokenDeviation: number;    // entry threshold: min |tokenPrice - 0.50|
+  stopTokenRetracement: number; // stop threshold: token retracement from entry
+
   // Exit / stop
   stopWindowStartSec: number;
   stopWindowEndSec: number;
@@ -45,6 +49,7 @@ export interface TradingConfig {
   perTradeRiskPct: number;
   dailyMaxLossPct: number;
   maxConsecutiveLosses: number;
+  consecutiveLossCooldownMs: number;  // cooldown after consecutive loss limit hit
   maxTotalLossPct: number;
   maxDailyTrades: number;
   maxBankroll: number | null;  // cap on bankroll from env; null = no cap
@@ -94,6 +99,9 @@ export function loadConfig(overrides: Partial<TradingConfig> = {}): TradingConfi
     minDepthMultiplier: 3,
     minTimeToSettlementSec: 75,
 
+    minTokenDeviation: 0.03,
+    stopTokenRetracement: 0.05,
+
     stopWindowStartSec: 150,
     stopWindowEndSec: 180,
     stopAdverseMove: 0.08,
@@ -102,6 +110,7 @@ export function loadConfig(overrides: Partial<TradingConfig> = {}): TradingConfi
     perTradeRiskPct: 0.0075,
     dailyMaxLossPct: 0.03,
     maxConsecutiveLosses: 3,
+    consecutiveLossCooldownMs: 30 * 60 * 1000,  // 30 minutes
     maxTotalLossPct: 0.20,
     maxDailyTrades: 288,
     maxBankroll: process.env.MAX_BANKROLL !== undefined ? Number(process.env.MAX_BANKROLL) : null,
